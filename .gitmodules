@@ -1,0 +1,6 @@
+[submodule "showcase-frontend"]
+	path = showcase-frontend
+	url = https://github.com/Dexight/showcase-frontend.git
+[submodule "showcase-backend"]
+	path = showcase-backend
+	url = https://github.com/Dexight/showcase-backend.git
