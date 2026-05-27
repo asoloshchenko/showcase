@@ -1,8 +1,7 @@
-# Объединённый стек для Portainer: postgres + minio (+init) + backend + frontend.
-# Деплой:
-#   - Portainer → Stacks → Add stack → Repository
-#   - Compose path: docker-compose.yml
-#   - Environment variables: заполнить все ${...} ниже (особенно OAuth-секреты)
+# Полный стек: postgres + minio (+init-bucket) + backend + frontend(builder) + nginx.
+#
+# Перед nginx-сервисом ставится host-уровневый reverse-proxy с TLS (см. DEPLOY.md):
+# host nginx терминирует HTTPS на :443 и проксирует на 127.0.0.1:${HTTP_PORT}.
 
 services:
   postgres:
@@ -31,8 +30,6 @@ services:
     volumes:
       - minio:/data
     networks: [app-network]
-    # Консоль MinIO доступна на 9001 — пробрасывайте через reverse-proxy,
-    # а не публикуйте порты наружу в проде.
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -62,10 +59,10 @@ services:
     restart: "no"
 
   backend:
-    # Образ собирается в Dexight/showcase-backend (.github/workflows/build-and-push.yml)
-    # и публикуется в GHCR. Pакет должен быть public, иначе настрой registry в Portainer.
-    image: ghcr.io/dexight/showcase-backend:latest
-    pull_policy: always
+    build:
+      context: ./showcase-backend
+      dockerfile: Dockerfile
+    image: showcase-backend:local
     restart: unless-stopped
     depends_on:
       postgres:
@@ -82,48 +79,59 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-my-bucket}
-      # OAuth — Azure AD
+      # OAuth — Azure AD (single-tenant)
       AZURE_TENANT_ID:     ${AZURE_TENANT_ID:?need AZURE_TENANT_ID}
       AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:?need AZURE_CLIENT_ID}
       AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:?need AZURE_CLIENT_SECRET}
       # OAuth — GitHub
       CLIENT_ID:     ${GITHUB_CLIENT_ID:?need GITHUB_CLIENT_ID}
       CLIENT_SECRET: ${GITHUB_CLIENT_SECRET:?need GITHUB_CLIENT_SECRET}
-      # Доверять заголовкам от nginx (X-Forwarded-Proto/Host) — нужно для HTTPS-редиректов OAuth
+      # Доверять X-Forwarded-* от host nginx — нужно, чтобы Spring строил HTTPS
+      # redirect_uri в OAuth-флоу.
       SERVER_FORWARD_HEADERS_STRATEGY: framework
-      # Куда редиректить после OAuth-логина и logout. Должен совпадать с тем, под каким
-      # URL опубликован фронт (https://...). В Azure/GitHub app тоже должен быть прописан
-      # callback вида ${FRONT_URL}/login/oauth2/code/azure (через nginx-прокси).
       FRONT_ENV: production
       FRONT_URL: ${FRONT_URL:?need FRONT_URL e.g. https://showcase.example.com}
     networks: [app-network]
-    # Порт наружу не публикуем — фронт ходит через внутреннюю сеть.
-    # Если нужен прямой доступ для отладки — раскомментируйте:
-    # ports: ["8080:8080"]
+    # Порт наружу не публикуем — все запросы идут через сервис nginx.
+    # Для отладки можно раскомментировать:
+    # ports: ["127.0.0.1:8080:8080"]
 
+  # Init-контейнер: собирает SPA в образе, на старте копирует /dist в shared volume
+  # и завершается. Пересобирай (docker compose build frontend) после правок фронта.
   frontend:
-    image: ghcr.io/dexight/showcase-frontend:latest
-    pull_policy: always
+    build:
+      context: ./showcase-frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ""   # same-origin; nginx сам проксирует на backend
+    image: showcase-frontend:local
+    volumes:
+      - frontend-dist:/out
+    networks: [app-network]
+    restart: "no"
+
+  nginx:
+    image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
-      - backend
-    networks: [app-network]
+      frontend:
+        condition: service_completed_successfully
+      backend:
+        condition: service_started
+    volumes:
+      - frontend-dist:/usr/share/nginx/html:ro
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    # Только loopback — снаружи доступ через host nginx + TLS.
+    # Поменяй на "0.0.0.0:${HTTP_PORT}:80", если хочешь временно выставить наружу.
     ports:
-      # На проде: убрать публикацию и поставить Traefik/NPM перед фронтом с TLS.
-      - "${FRONTEND_PORT:-8081}:80"
+      - "127.0.0.1:${HTTP_PORT:-8081}:80"
+    networks: [app-network]
 
 volumes:
   pgdata:
   minio:
+  frontend-dist:
 
 networks:
   app-network:
     driver: bridge
-    # Хост — shared, дефолтный address pool Docker'а исчерпан.
-    # Жёстко фиксируем свободную подсеть, чтобы не зависеть от пула.
-    # Если /24 окажется занят — поменяй на любой свободный /24
-    # из 192.168.{0,16,32,48,64,96,112,144,176,224,240}.0/20.
-    ipam:
-      config:
-        - subnet: 192.168.224.0/24
-          gateway: 192.168.224.1
