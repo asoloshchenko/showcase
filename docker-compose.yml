@@ -60,10 +60,7 @@ services:
     restart: "no"
 
   backend:
-    build:
-      context: ./showcase-backend
-      dockerfile: Dockerfile
-    image: showcase-backend:local
+    image: ghcr.io/dexight/showcase-backend:0.0.1
     restart: unless-stopped
     depends_on:
       postgres:
@@ -101,24 +98,14 @@ services:
   # Init-контейнер: собирает SPA в образе, на старте копирует /dist в shared volume
   # и завершается. Пересобирай (docker compose build frontend) после правок фронта.
   frontend:
-    build:
-      context: ./showcase-frontend
-      dockerfile: Dockerfile
-      args:
-        VITE_API_URL: ""   # same-origin; nginx сам проксирует на backend
-        VITE_DEPLOYMENT_MODE: prod
-    image: showcase-frontend:local
+    image: ghcr.io/dexight/showcase-frontend:0.0.1
     volumes:
       - frontend-dist:/out
     networks: [app-network]
     restart: "no"
 
   nginx:
-    # nginx.conf вшит в образ (см. nginx/Dockerfile) — bind-mount конфига больше не нужен.
-    build:
-      context: ./nginx
-      dockerfile: Dockerfile
-    image: showcase-nginx:local
+    image: ghcr.io/asoloshchenko/showcase-nginx:0.0.1
     restart: unless-stopped
     depends_on:
       frontend:
