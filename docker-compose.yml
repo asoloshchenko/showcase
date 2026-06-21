@@ -80,20 +80,19 @@ services:
       S3_ACCESS_KEY: ${MINIO_ROOT_USER}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       S3_BUCKET_NAME: ${S3_BUCKET_NAME:-my-bucket}
-      # OAuth — Azure AD (single-tenant). В dev-режиме можно оставить пустыми.
-      AZURE_TENANT_ID:     ${AZURE_TENANT_ID:-}
-      AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:-}
-      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:-}
-      # Dev-режим: статичная аутентификация по Bearer-токену вместо Azure OAuth.
-      # См. showcase-backend/src/main/java/com/example/showcase/config/DevTokenAuthFilter.java
-      APP_DEPLOYMENT_MODE: ${APP_DEPLOYMENT_MODE:-prod}
-      DEV_AUTH_TOKEN:      ${DEV_AUTH_TOKEN:-}
-      DEV_USER_ID:         ${DEV_USER_ID:-0}
+      # OAuth — Azure AD (single-tenant).
+      AZURE_TENANT_ID:     ${AZURE_TENANT_ID:?need AZURE_TENANT_ID}
+      AZURE_CLIENT_ID:     ${AZURE_CLIENT_ID:?need AZURE_CLIENT_ID}
+      AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET:?need AZURE_CLIENT_SECRET}
       # Доверять X-Forwarded-* от host nginx — нужно, чтобы Spring строил HTTPS
       # redirect_uri в OAuth-флоу.
       SERVER_FORWARD_HEADERS_STRATEGY: framework
       FRONT_ENV: production
       FRONT_URL: ${FRONT_URL:?need FRONT_URL e.g. https://showcase.example.com}
+      # Session cookie — переопределяется в .env под топологию деплоя.
+      # same-origin nginx (дефолт): lax + secure. Кросс-домен: COOKIE_SAME_SITE=none.
+      COOKIE_SAME_SITE: ${COOKIE_SAME_SITE:-lax}
+      COOKIE_SECURE:    ${COOKIE_SECURE:-true}
     networks: [app-network]
     # Порт наружу не публикуем — все запросы идут через сервис nginx.
     # Для отладки можно раскомментировать:
@@ -107,7 +106,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ""   # same-origin; nginx сам проксирует на backend
-        VITE_DEPLOYMENT_MODE: ${APP_DEPLOYMENT_MODE:-prod}
+        VITE_DEPLOYMENT_MODE: prod
     image: showcase-frontend:local
     volumes:
       - frontend-dist:/out
@@ -115,7 +114,11 @@ services:
     restart: "no"
 
   nginx:
-    image: nginx:1.27-alpine
+    # nginx.conf вшит в образ (см. nginx/Dockerfile) — bind-mount конфига больше не нужен.
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    image: showcase-nginx:local
     restart: unless-stopped
     depends_on:
       frontend:
@@ -124,7 +127,6 @@ services:
         condition: service_started
     volumes:
       - frontend-dist:/usr/share/nginx/html:ro
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     ports:
       - "127.0.0.1:${HTTP_PORT:-8081}:80"
     networks: [app-network]
